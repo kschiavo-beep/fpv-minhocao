@@ -524,9 +524,36 @@ const lpGroup = new THREE.Group(); world.add(lpGroup);
 /* ---------- prédios ---------- */
 {
   const P = [], N = [], UV = [], LY = [], TN = [], KD = [], SH = [], GR = [], BL = [], EM = [], MU = []; let murCount = 0, elisLayer = -1;
-  // a maior empena (área exposta) vira o retrato da Elis
+  // ---- onde o mural cabe de verdade: a parte da empena que não está escondida por outro prédio colado ou logo à frente ----
+  const BK = (x, y) => Math.floor(x / 20) + ',' + Math.floor(y / 20), bBk = new Map();
+  for (const b of LPJ.buildings) {
+    let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9; for (const [x, y] of b.p) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); }
+    b._bb = [x0, y0, x1, y1];
+    for (let cx = Math.floor(x0 / 20); cx <= Math.floor(x1 / 20); cx++) for (let cy = Math.floor(y0 / 20); cy <= Math.floor(y1 / 20); cy++) { const kk = cx + ',' + cy; if (!bBk.has(kk)) bBk.set(kk, []); bBk.get(kk).push(b); }
+  }
+  const pip = (p, x, y) => { let c = false; for (let i = 0, j = p.length - 1; i < p.length; j = i++) { const [xi, yi] = p[i], [xj, yj] = p[j]; if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) c = !c; } return c; };
+  const occAt = (x, y) => { let h = -1e9; for (const b2 of bBk.get(BK(x, y)) || []) { const bb = b2._bb; if (x < bb[0] || x > bb[2] || y < bb[1] || y > bb[3]) continue; if (b2.t > h && pip(b2.p, x, y)) h = b2.t; } return h; };
+  // testa 0,4 m e 1,5 m à frente da parede: prédio colado ou sobreposto esconde; entre prédios vale, com pelo menos 1,5 m de vão
+  function fitMural(b, k, lo) {
+    const p = b.p, [x0, y0] = p[k], [x1, y1] = p[(k + 1) % p.length], L = Math.hypot(x1 - x0, y1 - y0), nx = (y1 - y0) / L, ny = -(x1 - x0) / L;
+    const street = b.b + 0.4, top = b.t - street, STEP = 0.5, C = Math.max(1, Math.floor(L / STEP)), lo2 = new Float32Array(C);
+    for (let c = 0; c < C; c++) {
+      const t = (c + 0.5) / C, px = x0 + (x1 - x0) * t, py = y0 + (y1 - y0) * t; let m = lo;
+      for (const d of [0.4, 1.5]) m = Math.max(m, occAt(px + nx * d, py + ny * d) - street);
+      lo2[c] = m;
+    }
+    const cw = L / C; let best = { mw: 0 }, mwFull = Math.min(L * 0.86, (top - lo) * 0.45);
+    for (let a = 0; a < C; a++) { let bot = -1e9; for (let e = a; e < C; e++) { bot = Math.max(bot, lo2[e]); const bh = top - bot; if (bh <= 0) break; const w = (e - a + 1) * cw, mw = Math.min(w * 0.86, bh * 0.45); if (mw > best.mw) best = { ua: a * cw, w, bot, top, mw }; } }
+    best.mwFull = mwFull; return best;
+  }
+  const FIT = new Map(), MIN_MW = 3.5; window.__murDiag = [];
+  for (const b of LPJ.buildings) for (const [k, lo] of (b.em || [])) {
+    const pa = b.p[k], pb = b.p[(k + 1) % b.p.length], Lw = Math.hypot(pb[0] - pa[0], pb[1] - pa[1]);
+    if (Lw >= 8 && b.t - b.b - 0.4 - lo >= 10) FIT.set(b.id + ':' + k, fitMural(b, k, lo));
+  }
+  // a empena com o maior mural visível vira o retrato da Elis
   let elisKey = '', elisA = 0;
-  for (const b of LPJ.buildings) for (const [k, lo] of (b.em || [])) { const pa = b.p[k], pb = b.p[(k + 1) % b.p.length], Lw = Math.hypot(pb[0] - pa[0], pb[1] - pa[1]), A = Lw * (b.t - b.b - 0.4 - lo); if (Lw >= 8 && A > elisA) { elisA = A; elisKey = b.id + ':' + k; } }
+  for (const [key, f] of FIT) if (f.mw > elisA) { elisA = f.mw; elisKey = key; }
   const LAY = [TL.facLow, TL.facRes, TL.facTower, TL.facShed];
   const col = new THREE.Color();
   let seed = rng32(4242);
@@ -541,10 +568,14 @@ const lpGroup = new THREE.Group(); world.add(lpGroup);
       const nx = (y1 - y0) / L, ny = -(x1 - x0) / L;
       const v0 = b.b - street, v1 = b.t - street, lo = emp.has(k) ? emp.get(k) : 1e4;
       // empena grande: 60% ganha uma pintura boba (escolha fixa por prédio/parede)
-      const hsh = ((b.id * 2654435761 + k * 40503) >>> 0) % 1000, isElis = (b.id + ':' + k) === elisKey, mur = isElis ? NUM_MUR : ((emp.has(k) && L >= 8 && v1 - lo >= 10 && hsh % 10 < 6) ? hsh % NUM_MUR : -1);   // 32 murais N64 reaproveitados; a maior empena = Elis
+      const hsh = ((b.id * 2654435761 + k * 40503) >>> 0) % 1000, isElis = (b.id + ':' + k) === elisKey, fit = FIT.get(b.id + ':' + k);
+      let mur = isElis ? NUM_MUR : ((emp.has(k) && L >= 8 && v1 - lo >= 10 && hsh % 10 < 6) ? hsh % NUM_MUR : -1);   // 32 murais reaproveitados; a maior empena visível = Elis
+      if (mur >= 0) window.__murDiag.push({ id: b.id, k, mur, L: +L.toFixed(1), mwFull: +fit.mwFull.toFixed(1), mw: +fit.mw.toFixed(1), drop: !isElis && fit.mw < MIN_MW, x: (x0 + x1) / 2, y: (y0 + y1) / 2, nx, ny, z0: street + fit.bot, z1: b.t, ua: fit.ua, w: fit.w, x0, y0, dx: (x1 - x0) / L, dy: (y1 - y0) / L, street });
+      if (mur >= 0 && !isElis && fit.mw < MIN_MW) mur = -1;   // não sobra parede visível suficiente: fica só a empena lisa
       if (isElis) elisLayer = NUM_MUR;
+      const em = mur >= 0 ? [u + fit.ua, fit.w, fit.bot, fit.top] : [u, L, lo, v1];
       const quad = [[x0, y0, b.b, u, v0], [x1, y1, b.b, u + L, v0], [x1, y1, b.t, u + L, v1], [x0, y0, b.b, u, v0], [x1, y1, b.t, u + L, v1], [x0, y0, b.t, u, v1]];
-      for (const [x, y, z, uu, vv] of quad) { P.push(x, y, z); N.push(nx, ny, 0); UV.push(uu, vv); LY.push(lay); TN.push(wall.r, wall.g, wall.b); KD.push(0); SH.push(shop); GR.push(gw, gh); BL.push(lo); EM.push(u, L, lo, v1); MU.push(mur); }
+      for (const [x, y, z, uu, vv] of quad) { P.push(x, y, z); N.push(nx, ny, 0); UV.push(uu, vv); LY.push(lay); TN.push(wall.r, wall.g, wall.b); KD.push(0); SH.push(shop); GR.push(gw, gh); BL.push(lo); EM.push(em[0], em[1], em[2], em[3]); MU.push(mur); }
       u += L;
     }
     const tri = THREE.ShapeUtils.triangulateShape(pts.map(([x, y]) => new THREE.Vector2(x, y)), []);
@@ -804,7 +835,8 @@ const lpBal = (() => {
     for (let k = 0; k < list.length; k++) {
       const b = list[k];
       if (!b.alive && cfg.balAuto === 'on') { b.back -= dt; if (b.back <= 0) b.alive = true; }   // só volta sozinho se o usuário ligar
-      const bz = b.z + Math.sin(t * 0.9 + b.ph) * 0.35, bx = b.x + Math.sin(t * 0.5 + b.ph * 2) * 0.2;
+      // sobe e desce de leve (±0,7 m, ~5 s, cada um no seu ritmo) para dar para perceber que é coisa que se mexe
+      const bz = b.z + Math.sin(t * (1.1 + (b.ph % 1) * 0.4) + b.ph) * 0.7, bx = b.x + Math.sin(t * 0.5 + b.ph * 2) * 0.2;
       if (b.alive && st.mode !== 'held' && (dp.x - bx) ** 2 + (dp.y - b.y) ** 2 + (dp.z - bz) ** 2 < (b.r + 0.45) ** 2) { b.alive = false; b.back = 25; burst({ x: bx, y: b.y, z: bz }); }
       if (b.alive) { v.set(bx, b.y, bz); sc.set(b.r, b.r, b.r); m4.compose(v, q.identity(), sc); } else m4.compose(v.set(0, 0, -1e4), q.identity(), sc.set(0.001, 0.001, 0.001));
       mesh.setMatrixAt(k, m4);
